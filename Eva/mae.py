@@ -19,7 +19,7 @@ from Eva.layers import MarkerEmbeddingGenePT
 from Eva.layers import MaskedBlock as Block
 from Eva.layers import PatchEmbedChannelFree
 from Eva.masking import random_masking
-from Eva.pos_embed import get_1d_sincos_pos_embed_from_grid, get_2d_sincos_pos_embed
+from Eva.pos_embed import get_2d_sincos_pos_embed
 
 
 class MaskedAutoencoderViT(nn.Module):
@@ -43,7 +43,6 @@ class MaskedAutoencoderViT(nn.Module):
         # ----------------------------- 1. Channel Former ---------------------------- #
 
         # ------------------------ patchify and embed patches ------------------------ #
-        self.patch_embed_channel = conf.cm.patch_embed_channel
         self.patch_embed = PatchEmbedChannelFree(
             img_size=conf.ds.patch_size, token_size=conf.ds.token_size, embed_dim=conf.ds.token_size**2
         )
@@ -84,11 +83,7 @@ class MaskedAutoencoderViT(nn.Module):
         # ----------------------------- Marker Embeddings ---------------------------- #
         self.marker_cls_token = nn.Parameter(torch.zeros(1, 1, conf.cm.dim))
         self.marker_dim = conf.ds.marker_dim
-        marker_dict = pickle.load(
-            open(
-                "marker_embeddings/GenePT_embedding.pkl", "rb"
-            )
-        )
+        marker_dict = pickle.load(open("marker_embeddings/GenePT_embedding.pkl", "rb"))
         self.marker_embed = MarkerEmbeddingGenePT(marker_dict, self.marker_dim)
         self.marker_proj = nn.Sequential(
             nn.Linear(self.marker_dim, conf.cm.dim),
@@ -134,7 +129,6 @@ class MaskedAutoencoderViT(nn.Module):
             nn.Linear(conf.pm.out_dim * 2, conf.de.dim),
             nn.LayerNorm(conf.de.dim),
         )
-        self.channel_recon = conf.pm.channel_recon
 
         # ---------------------------------------------------------------------------- #
 
@@ -145,22 +139,9 @@ class MaskedAutoencoderViT(nn.Module):
         # self.decoder_embed = nn.Linear(conf.pm.dim, conf.de.dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, conf.de.dim))  # match with BCND
 
-        # ---------------- Positional encoding with different flattens --------------- #
-        if conf.de.flatten == "all":
-            self.decoder_pos_embed = nn.Parameter(
-                torch.zeros(1, (self.num_patches + 1) * conf.ds.in_channels, conf.de.dim), requires_grad=False
-            )  # Fixed sin-cos embedding
-        elif conf.de.flatten == "patch":
-            self.decoder_pos_embed = nn.Parameter(
-                torch.zeros(1, self.num_patches + 1, conf.de.dim), requires_grad=False
-            )
-        elif conf.de.flatten == "channel":
-            self.decoder_pos_embed = nn.Parameter(torch.zeros(1, conf.ds.in_channels, conf.de.dim), requires_grad=False)
-        self.flatten_dim_mapper = {  # Keep a dict to record flatten dim combos
-            "patch": "(B C) N D",
-            "channel": "(B N) C D",
-            "all": "B (C N) D",
-        }
+        # ---------------- Positional encoding for patch-level flatten -------------- #
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, conf.de.dim), requires_grad=False)
+        self.flatten_dim_mapper = "(B C) N D"
         # ---------------------------------------------------------------------------- #
 
         # Decoder transformer blocks
@@ -190,26 +171,11 @@ class MaskedAutoencoderViT(nn.Module):
         )
         self.enc_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
-        # Initialize decoder position embeddings based on flatten mode
-        if self.conf.de.flatten == "all":
-            # For "all" mode, we need to create position embeddings for all channels and patches
-            # Use 1D position encoding for the flattened sequence
-            total_positions = (self.num_patches + 1) * self.conf.ds.in_channels
-            pos_embed = get_1d_sincos_pos_embed_from_grid(self.decoder_pos_embed.shape[-1], np.arange(total_positions))
-            self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-        elif self.conf.de.flatten == "patch":
-            # For "patch" mode, we only need position embeddings for patches
-            pos_embed = get_2d_sincos_pos_embed(
-                self.decoder_pos_embed.shape[-1], int(self.patch_embed.num_patches**0.5), cls_token=True
-            )
-            self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-        elif self.conf.de.flatten == "channel":
-            # For "channel" mode, we only need position embeddings for channels
-            # Use 1D position encoding since channels don't have 2D spatial relationships
-            pos_embed = get_1d_sincos_pos_embed_from_grid(
-                self.decoder_pos_embed.shape[-1], np.arange(self.conf.ds.in_channels)
-            )
-            self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+        # Initialize decoder position embeddings (patch-only)
+        pos_embed = get_2d_sincos_pos_embed(
+            self.decoder_pos_embed.shape[-1], int(self.patch_embed.num_patches**0.5), cls_token=True
+        )
+        self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
         # Initialize patch embedding weights
         w = self.patch_embed.proj.weight.data
@@ -272,8 +238,6 @@ class MaskedAutoencoderViT(nn.Module):
         # image: [B, C, H, W]
         B, C, H, W = image.shape
         x = self.patch_embed(image)  # [B, N, P*P*C], with channel flatten, [B, C, N, P*P] with channel-agnostic
-        if self.patch_embed_channel == "aware":
-            x = rearrange(x, "B N (P1 P2 C) -> B C N (P1 P2)", B=B, N=self.num_patches, P1=self.conf.ds.token_size, C=C)
 
         x = self.channel_proj(x)  # [B, C, N, D]
 
@@ -342,10 +306,8 @@ class MaskedAutoencoderViT(nn.Module):
         Returns:
             Processed features [B, C, N+1, D] (before enc_proj)
         """
-        if self.channel_recon == "full":
-            x = input_x[:, :, 1:, :]
-        else:
-            x = input_x[:, :, 0:1, :]
+
+        x = input_x[:, :, 0:1, :]
         x = self.linker_proj(x)
         B, N, C, D = x.shape
         x = rearrange(x, "B N C D -> (B C) N D", B=B, N=N, C=C, D=D)
@@ -386,10 +348,8 @@ class MaskedAutoencoderViT(nn.Module):
         """
         x = self.enc_proj(x)
         B, C, N, D = x.shape
-
-        if self.channel_recon == "repeat":
-            x = x.repeat(1, len(marker[0]), 1, 1)
-            C = len(marker[0])
+        x = x.repeat(1, len(marker[0]), 1, 1)
+        C = len(marker[0])
         marker_embeddings = self._embed_marker(marker, expand_num=N).to(x.device)
         marker_embeddings = self.marker_proj(marker_embeddings)
         x = x + marker_embeddings
@@ -398,31 +358,16 @@ class MaskedAutoencoderViT(nn.Module):
         if channel_mask is not None:
             # channel_mask: [B, C] -> [B, C, N] to match the decoder input shape
             channel_mask = channel_mask[..., None].expand(-1, -1, N)  # [B, C] to [B, C, N]
-
-            # Reshape based on flatten mode to create proper attention mask
-            if self.conf.de.flatten == "all":
-                # For "all" mode: [B, C, N] -> [B, C*N] -> [B*C*N, C*N]
-                channel_mask = channel_mask.reshape(B, C * N)  # [B, C*N]
-                channel_mask = channel_mask.reshape(-1, C * N)  # [B*C*N, C*N]
-                attn_mask = (channel_mask.unsqueeze(1) + channel_mask.unsqueeze(2)).clamp(max=1)  # [B*C*N, C*N, C*N]
-                attn_mask = attn_mask.unsqueeze(1)  # [B*C*N, 1, C*N, C*N]
-            elif self.conf.de.flatten == "patch":
-                # For "patch" mode: [B, C, N] -> [B*C, N] -> [B*C*N, N]
-                channel_mask = channel_mask.reshape(B * C, N)  # [B*C, N]
-                channel_mask = channel_mask.reshape(-1, N)  # [B*C*N, N]
-                attn_mask = (channel_mask.unsqueeze(1) + channel_mask.unsqueeze(2)).clamp(max=1)  # [B*C*N, N, N]
-                attn_mask = attn_mask.unsqueeze(1)  # [B*C*N, 1, N, N]
-            elif self.conf.de.flatten == "channel":
-                # For "channel" mode: [B, C, N] -> [B*N, C] -> [B*N*C, C]
-                channel_mask = channel_mask.permute(0, 2, 1).reshape(B * N, C)  # [B*N, C]
-                channel_mask = channel_mask.reshape(-1, C)  # [B*N*C, C]
-                attn_mask = (channel_mask.unsqueeze(1) + channel_mask.unsqueeze(2)).clamp(max=1)  # [B*N*C, C, C]
-                attn_mask = attn_mask.unsqueeze(1)  # [B*N*C, 1, C, C]
+            # For patch flatten: [B, C, N] -> [B*C, N] -> [B*C*N, N]
+            channel_mask = channel_mask.reshape(B * C, N)  # [B*C, N]
+            channel_mask = channel_mask.reshape(-1, N)  # [B*C*N, N]
+            attn_mask = (channel_mask.unsqueeze(1) + channel_mask.unsqueeze(2)).clamp(max=1)  # [B*C*N, N, N]
+            attn_mask = attn_mask.unsqueeze(1)  # [B*C*N, 1, N, N]
         else:
             attn_mask = None
         # ---------------------------------------------------------------------------- #
 
-        x = rearrange(x, f"B C N D -> {self.flatten_dim_mapper[self.conf.de.flatten]}")
+        x = rearrange(x, f"B C N D -> {self.flatten_dim_mapper}")
         # project encoder output to match decoder
         x = x + self.decoder_pos_embed
 
@@ -430,7 +375,7 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x, attn_mask=attn_mask)
         x = self.decoder_norm(x)
         x = self.decoder_pred(x)
-        x = rearrange(x, f"{self.flatten_dim_mapper[self.conf.de.flatten]} -> B C N D", N=N, C=C, B=B)
+        x = rearrange(x, f"{self.flatten_dim_mapper} -> B C N D", N=N, C=C, B=B)
         return x
 
     def forward(
