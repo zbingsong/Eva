@@ -21,7 +21,6 @@ from utils.wsi_inference import LevelInferenceResult, run_level_inference
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config.yaml"
 DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "Eva_ft.ckpt"
 DEFAULT_BIOMARKERS_PATH = REPO_ROOT / "examples" / "biomarkers.npy"
-SUPPORTED_OME_DTYPE = "uint16"
 DEFAULT_WHITE_THRESHOLD = 200.0 / 255.0
 
 
@@ -87,14 +86,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ome-dtype",
-        default=SUPPORTED_OME_DTYPE,
-        help="Requested OME-TIFF dtype. The current exporter supports only uint16.",
+        choices=["uint16", "float32"],
+        default=None,
+        help="Optional OME-TIFF dtype override. Defaults to uint16 for quantized modes and float32 for --ome-quant-mode none.",
     )
     parser.add_argument(
         "--ome-quant-mode",
-        choices=["global", "tile"],
+        choices=["global", "tile", "none"],
         default="global",
-        help="OME-TIFF quantization mode: whole-image per biomarker or independently per tile.",
+        help="OME-TIFF export mode: whole-image quantization, per-tile quantization, or raw float32 export with no quantization.",
     )
     parser.add_argument(
         "--quant-min",
@@ -143,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_from_checkpoint(args.checkpoint_path, config, device=device)
     quant_min, quant_max = _resolve_quantization_args(args)
+    ome_dtype = _resolve_ome_dtype(args)
 
     slide = _open_slide(args.slide_path)
     try:
@@ -163,6 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 quant_min=quant_min,
                 quant_max=quant_max,
                 ome_quant_mode=args.ome_quant_mode,
+                ome_dtype=ome_dtype,
             )
             _print_level_summary(result)
     finally:
@@ -174,21 +176,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if args.ome_dtype != SUPPORTED_OME_DTYPE:
-        raise ValueError(
-            f"unsupported --ome-dtype {args.ome_dtype!r}; the current exporter supports only {SUPPORTED_OME_DTYPE!r}"
-        )
     if any(level < 0 for level in args.levels):
         raise ValueError("--levels must contain only non-negative integers")
     if args.stride < args.tile_size:
         raise ValueError("--stride must be greater than or equal to --tile-size")
-    if args.ome_quant_mode == "tile":
+    if args.ome_quant_mode in {"tile", "none"}:
         if args.quant_min is not None or args.quant_max is not None:
             warnings.warn(
-                "In tile mode, --quant-min and --quant-max are ignored.",
+                f"In {args.ome_quant_mode} mode, --quant-min and --quant-max are ignored.",
                 UserWarning,
                 stacklevel=2,
             )
+    if args.ome_dtype is not None:
+        if args.ome_quant_mode == "none" and args.ome_dtype != "float32":
+            raise ValueError("--ome-dtype must be 'float32' when --ome-quant-mode is 'none'")
+        if args.ome_quant_mode in {"global", "tile"} and args.ome_dtype != "uint16":
+            raise ValueError("--ome-dtype must be 'uint16' for quantized OME-TIFF export")
+    if args.ome_quant_mode in {"tile", "none"}:
         return
     if (args.quant_min is None) != (args.quant_max is None):
         raise ValueError("--quant-min and --quant-max must be provided together")
@@ -233,10 +237,18 @@ def _load_model_tile_size(config: object) -> int:
 
 
 def _resolve_quantization_args(args: argparse.Namespace) -> tuple[float | None, float | None]:
-    if args.ome_quant_mode == "tile":
+    if args.ome_quant_mode in {"tile", "none"}:
         return None, None
 
     return args.quant_min, args.quant_max
+
+
+def _resolve_ome_dtype(args: argparse.Namespace) -> str | None:
+    if args.ome_dtype is not None:
+        return args.ome_dtype
+    if args.ome_quant_mode == "none":
+        return "float32"
+    return "uint16"
 
 
 def _validate_model_geometry(args: argparse.Namespace, config: object) -> None:

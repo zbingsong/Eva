@@ -28,6 +28,7 @@ def test_cli_parser_accepts_level_zero_defaults() -> None:
     assert args.stride == 224
     assert args.white_threshold == pytest.approx(200.0 / 255.0)
     assert args.ome_quant_mode == "global"
+    assert args.ome_dtype is None
 
 
 def test_cli_validate_args_accepts_fixed_quantization_bounds() -> None:
@@ -73,6 +74,29 @@ def test_cli_validate_args_warns_that_fixed_bounds_are_ignored_in_tile_mode() ->
         module._validate_args(args)
 
 
+def test_cli_validate_args_warns_that_fixed_bounds_are_ignored_in_none_mode() -> None:
+    module = _load_cli_module()
+    parser = module.build_arg_parser()
+
+    args = parser.parse_args(
+        [
+            "--slide-path",
+            "sample.svs",
+            "--output-dir",
+            "out",
+            "--ome-quant-mode",
+            "none",
+            "--quant-min",
+            "0.0",
+            "--quant-max",
+            "1.0",
+        ]
+    )
+
+    with pytest.warns(UserWarning, match="ignored"):
+        module._validate_args(args)
+
+
 def test_cli_validate_args_rejects_non_finite_quantization_bounds() -> None:
     module = _load_cli_module()
     parser = module.build_arg_parser()
@@ -92,6 +116,40 @@ def test_cli_validate_args_rejects_non_finite_quantization_bounds() -> None:
 
     with pytest.raises(ValueError, match="finite"):
         module._validate_args(args)
+
+
+def test_cli_validate_args_rejects_uint16_dtype_in_none_mode() -> None:
+    module = _load_cli_module()
+    parser = module.build_arg_parser()
+
+    args = parser.parse_args(
+        [
+            "--slide-path",
+            "sample.svs",
+            "--output-dir",
+            "out",
+            "--ome-quant-mode",
+            "none",
+            "--ome-dtype",
+            "uint16",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="float32"):
+        module._validate_args(args)
+
+
+def test_cli_resolve_ome_dtype_defaults_from_quant_mode() -> None:
+    module = _load_cli_module()
+    parser = module.build_arg_parser()
+
+    global_args = parser.parse_args(["--slide-path", "sample.svs", "--output-dir", "out"])
+    none_args = parser.parse_args(
+        ["--slide-path", "sample.svs", "--output-dir", "out", "--ome-quant-mode", "none"]
+    )
+
+    assert module._resolve_ome_dtype(global_args) == "uint16"
+    assert module._resolve_ome_dtype(none_args) == "float32"
 
 
 def test_load_biomarkers_rejects_non_1d_arrays(tmp_path: Path) -> None:
@@ -196,6 +254,7 @@ def test_main_runs_requested_levels_and_closes_slide(tmp_path: Path, monkeypatch
     assert all(call["quant_min"] is None for call in run_calls)
     assert all(call["quant_max"] is None for call in run_calls)
     assert all(call["ome_quant_mode"] == "tile" for call in run_calls)
+    assert all(call["ome_dtype"] == "uint16" for call in run_calls)
 
 
 def test_load_patch_size_rejects_invalid_config() -> None:

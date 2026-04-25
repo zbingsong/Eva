@@ -48,6 +48,7 @@ def write_level_ome_tiff(
     quant_max: float | None = None,
     quant_mode: str = "global",
     tile_size: int = 224,
+    ome_dtype: str | None = None,
 ) -> Path:
     """Write a single-level ``CYX`` OME-TIFF from raw ``HWC`` float predictions."""
 
@@ -60,16 +61,19 @@ def write_level_ome_tiff(
             raise ValueError("quant_min and quant_max must be finite when provided")
         if quant_max <= quant_min:
             raise ValueError("quant_max must be greater than quant_min")
-    if quant_mode not in {"global", "tile"}:
-        raise ValueError("quant_mode must be either 'global' or 'tile'")
+    if quant_mode not in {"global", "tile", "none"}:
+        raise ValueError("quant_mode must be one of 'global', 'tile', or 'none'")
     if not isinstance(tile_size, int) or isinstance(tile_size, bool) or tile_size <= 0:
         raise ValueError("tile_size must be a positive integer")
+    if ome_dtype is not None and ome_dtype not in {"uint16", "float32"}:
+        raise ValueError("ome_dtype must be either 'uint16', 'float32', or None")
 
     raw_path = Path(raw_npy_path)
     output_path = Path(ome_path)
 
     raw_predictions = np.load(raw_path, mmap_mode="r")
     channel_count, _ = _validate_raw_predictions(raw_predictions, channel_names)
+    resolved_ome_dtype = _resolve_ome_dtype(quant_mode=quant_mode, ome_dtype=ome_dtype)
     metadata = build_ome_metadata(
         channel_names=channel_names,
         level=level,
@@ -77,7 +81,7 @@ def write_level_ome_tiff(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     staging_path: Path | None = None
-    quantized: np.memmap | None = None
+    staged_predictions: np.memmap | None = None
 
     try:
         with tempfile.NamedTemporaryFile(
@@ -88,52 +92,76 @@ def write_level_ome_tiff(
         ) as handle:
             staging_path = Path(handle.name)
 
-        # Stage the quantized ``CYX`` array out-of-core so we never materialize the
-        # full slide prediction in memory while converting channels to ``uint16``.
-        quantized = np.lib.format.open_memmap(
+        stage_dtype = np.uint16 if resolved_ome_dtype == "uint16" else np.float32
+        # Stage the output ``CYX`` array out-of-core so we never materialize the
+        # full slide prediction in memory while converting or reordering channels.
+        staged_predictions = np.lib.format.open_memmap(
             staging_path,
             mode="w+",
-            dtype=np.uint16,
+            dtype=stage_dtype,
             shape=(channel_count, raw_predictions.shape[0], raw_predictions.shape[1]),
         )
-        quantized[...] = 0
+        staged_predictions[...] = 0
 
         for start_idx in range(0, channel_count, channel_chunk_size):
             stop_idx = min(start_idx + channel_chunk_size, channel_count)
             if quant_mode == "global":
                 _quantize_channel_chunk(
                     raw_predictions=raw_predictions,
-                    quantized=quantized,
+                    quantized=staged_predictions,
                     start_idx=start_idx,
                     stop_idx=stop_idx,
                     quant_min=quant_min,
                     quant_max=quant_max,
                 )
-            else:
+            elif quant_mode == "tile":
                 _quantize_channel_chunk_by_tile(
                     raw_predictions=raw_predictions,
-                    quantized=quantized,
+                    quantized=staged_predictions,
                     start_idx=start_idx,
                     stop_idx=stop_idx,
                     tile_size=tile_size,
                 )
-            quantized.flush()
+            else:
+                _copy_channel_chunk_float32(
+                    raw_predictions=raw_predictions,
+                    staged_predictions=staged_predictions,
+                    start_idx=start_idx,
+                    stop_idx=stop_idx,
+                )
+            staged_predictions.flush()
 
         tifffile.imwrite(
             output_path,
-            quantized,
+            staged_predictions,
             metadata=metadata,
             ome=True,
             photometric="minisblack",
         )
     finally:
-        if quantized is not None:
-            quantized.flush()
-            del quantized
+        if staged_predictions is not None:
+            staged_predictions.flush()
+            del staged_predictions
         if staging_path is not None and staging_path.exists():
             staging_path.unlink()
 
     return output_path
+
+
+def _resolve_ome_dtype(quant_mode: str, ome_dtype: str | None) -> str:
+    if quant_mode == "none":
+        expected_dtype = "float32"
+    else:
+        expected_dtype = "uint16"
+
+    if ome_dtype is None:
+        return expected_dtype
+    if ome_dtype != expected_dtype:
+        raise ValueError(
+            f"ome_dtype {ome_dtype!r} is incompatible with quant_mode {quant_mode!r}; "
+            f"expected {expected_dtype!r}"
+        )
+    return ome_dtype
 
 
 def _validate_raw_predictions(
@@ -213,3 +241,18 @@ def _quantize_channel_chunk_by_tile(
                 quant_min=tile_min,
                 quant_max=tile_max,
             )
+
+
+def _copy_channel_chunk_float32(
+    raw_predictions: np.ndarray,
+    staged_predictions: np.memmap,
+    start_idx: int,
+    stop_idx: int,
+) -> None:
+    for channel_idx in range(start_idx, stop_idx):
+        channel_view = raw_predictions[:, :, channel_idx]
+
+        if not np.all(np.isfinite(channel_view)):
+            raise ValueError("raw predictions must contain only finite values")
+
+        staged_predictions[channel_idx, :, :] = channel_view.astype(np.float32, copy=False)

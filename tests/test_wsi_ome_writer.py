@@ -54,6 +54,7 @@ def test_write_level_ome_tiff_creates_multichannel_file(tmp_path: Path) -> None:
         channel_chunk_size=1,
         quant_mode="global",
         tile_size=2,
+        ome_dtype="uint16",
     )
 
     assert ome_path.exists()
@@ -130,6 +131,7 @@ def test_run_level_inference_writes_raw_and_ome_outputs(tmp_path: Path) -> None:
         white_threshold=0.95,
         read_tile_fn=fake_read_tile,
         run_model_fn=fake_run_model,
+        ome_dtype="uint16",
     )
 
     raw = np.load(result.raw_npy_path, mmap_mode="r")
@@ -167,7 +169,7 @@ def test_run_level_inference_forwards_ome_writer_settings(tmp_path: Path) -> Non
         rgb_tiles={(0, 0): np.zeros((224, 224, 3), dtype=np.float32)},
     )
     forwarded_calls: list[
-        tuple[Path, Path, list[str], int, int, float | None, float | None, str, int]
+        tuple[Path, Path, list[str], int, int, float | None, float | None, str, int, str | None]
     ] = []
 
     def fake_read_tile(
@@ -193,6 +195,7 @@ def test_run_level_inference_forwards_ome_writer_settings(tmp_path: Path) -> Non
         quant_max: float | None,
         quant_mode: str,
         tile_size: int,
+        ome_dtype: str | None,
     ) -> Path:
         raw_path = Path(raw_npy_path)
         requested_output_path = Path(ome_path)
@@ -208,6 +211,7 @@ def test_run_level_inference_forwards_ome_writer_settings(tmp_path: Path) -> Non
                 quant_max,
                 quant_mode,
                 tile_size,
+                ome_dtype,
             )
         )
         actual_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +234,7 @@ def test_run_level_inference_forwards_ome_writer_settings(tmp_path: Path) -> Non
         quant_min=-1.0,
         quant_max=3.0,
         ome_quant_mode="tile",
+        ome_dtype="uint16",
     )
 
     assert forwarded_calls == [
@@ -243,6 +248,7 @@ def test_run_level_inference_forwards_ome_writer_settings(tmp_path: Path) -> Non
             3.0,
             "tile",
             224,
+            "uint16",
         )
     ]
     assert result.ome_tiff_path == tmp_path / "custom" / "writer-output.ome.tiff"
@@ -264,6 +270,7 @@ def test_write_level_ome_tiff_respects_fixed_quantization_bounds(tmp_path: Path)
         quant_max=20.0,
         quant_mode="global",
         tile_size=2,
+        ome_dtype="uint16",
     )
 
     with tifffile.TiffFile(ome_path) as tif:
@@ -287,6 +294,7 @@ def test_write_level_ome_tiff_tile_quantizes_each_tile_independently(tmp_path: P
         channel_chunk_size=1,
         quant_mode="tile",
         tile_size=2,
+        ome_dtype="uint16",
     )
 
     with tifffile.TiffFile(ome_path) as tif:
@@ -300,3 +308,36 @@ def test_write_level_ome_tiff_tile_quantizes_each_tile_independently(tmp_path: P
         dtype=np.uint16,
     )
     assert np.array_equal(data, expected)
+
+
+def test_write_level_ome_tiff_none_mode_preserves_float32_values(tmp_path: Path) -> None:
+    raw_path = tmp_path / "float-pred.npy"
+    raw = np.lib.format.open_memmap(raw_path, mode="w+", dtype=np.float32, shape=(2, 3, 1))
+    raw[:, :, 0] = np.array(
+        [
+            [-1.5, 0.0, 1.5],
+            [2.25, -0.75, 3.5],
+        ],
+        dtype=np.float32,
+    )
+    raw.flush()
+
+    ome_path = write_level_ome_tiff(
+        raw_npy_path=raw_path,
+        ome_path=tmp_path / "float-pred.ome.tiff",
+        channel_names=["A"],
+        level=0,
+        channel_chunk_size=1,
+        quant_mode="none",
+        tile_size=2,
+        ome_dtype="float32",
+    )
+
+    with tifffile.TiffFile(ome_path) as tif:
+        data = np.squeeze(tif.series[0].asarray())
+        pixels = ET.fromstring(tif.ome_metadata).find("ome:Image/ome:Pixels", OME_NS)
+
+    assert data.dtype == np.float32
+    np.testing.assert_allclose(data, raw[:, :, 0])
+    assert pixels is not None
+    assert pixels.attrib["Type"] == "float"

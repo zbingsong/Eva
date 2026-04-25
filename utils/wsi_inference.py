@@ -58,6 +58,7 @@ WriteOmeFn = Callable[
         float | None,
         str,
         int,
+        str | None,
     ],
     Path,
 ]
@@ -85,6 +86,7 @@ def run_level_inference(
     quant_min: float | None = None,
     quant_max: float | None = None,
     ome_quant_mode: str = "global",
+    ome_dtype: str | None = None,
 ) -> LevelInferenceResult:
     """Run tile-wise inference for a single slide level.
 
@@ -137,7 +139,11 @@ def run_level_inference(
         omitted, the OME writer auto-scales each channel independently.
     ome_quant_mode
         OME quantization mode. ``"global"`` scales each biomarker over the full
-        level image, while ``"tile"`` scales each full tile independently.
+        level image, ``"tile"`` scales each full tile independently, and
+        ``"none"`` writes raw float32 predictions directly to OME-TIFF.
+    ome_dtype
+        Optional OME-TIFF pixel type override. When omitted, quantized modes use
+        ``uint16`` and ``"none"`` uses ``float32``.
 
     Returns
     -------
@@ -173,8 +179,8 @@ def run_level_inference(
             raise ValueError("quant_min and quant_max must be finite when provided")
         if quant_max <= quant_min:
             raise ValueError("quant_max must be greater than quant_min")
-    if ome_quant_mode not in {"global", "tile"}:
-        raise ValueError("ome_quant_mode must be either 'global' or 'tile'")
+    if ome_quant_mode not in {"global", "tile", "none"}:
+        raise ValueError("ome_quant_mode must be one of 'global', 'tile', or 'none'")
 
     biomarker_names = _materialize_biomarkers(biomarkers)
     level_shape = _get_level_shape(slide, level)
@@ -249,6 +255,7 @@ def run_level_inference(
         quant_max,
         ome_quant_mode,
         tile_size,
+        ome_dtype,
     )
 
     return LevelInferenceResult(
