@@ -66,6 +66,49 @@ The model requires a configuration file (YAML format) that specifies:
 
 See `config.yaml` for an example configuration.
 
+## WSI Inference
+
+Run one-slide level-0 virtual staining and export both the raw `float32` memmap and the quantized OME-TIFF:
+
+```bash
+python scripts/run_wsi_inference.py \
+  --slide-path /path/to/sample.svs \
+  --output-dir outputs/wsi \
+  --levels 0 \
+  --biomarkers-path examples/biomarkers.npy
+```
+
+By default the CLI loads `config.yaml`, `examples/biomarkers.npy`, and `Eva_ft.ckpt` from the repo root, then writes:
+- `outputs/wsi/level_0/predictions.npy`
+- `outputs/wsi/level_0/predictions.ome.tiff`
+
+OME-TIFF quantization modes:
+- `global` (default): quantize each biomarker using the min/max over the whole level image
+- `tile`: quantize each full inference tile independently before stitching into the OME-TIFF
+
+In `tile` mode, `--quant-min` and `--quant-max` are ignored with a warning.
+
+Smoke validation stays opt-in so it remains cheap by default. Point `EVA_WSI_SMOKE_SVS` at a small `.svs` sample, then run:
+
+```bash
+EVA_WSI_SMOKE_SVS=/path/to/small_sample.svs pytest tests/test_wsi_smoke.py -v
+```
+
+For a manual CLI spot-check on the same sample:
+
+```bash
+python scripts/run_wsi_inference.py \
+  --slide-path /path/to/small_sample.svs \
+  --output-dir outputs/wsi-smoke \
+  --levels 0 \
+  --tile-size 224 \
+  --stride 224 \
+  --batch-size 1 \
+  --white-threshold 0.7843137254901961 \
+  --quant-min 0.0 \
+  --quant-max 1.0
+```
+
 
 ## Citation 📚
 Please check Eva paper at [bioRxiv](https://www.biorxiv.org/content/10.64898/2025.12.10.693553v1), and please cite as:

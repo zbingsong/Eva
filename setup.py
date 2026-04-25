@@ -16,8 +16,11 @@ setup(
         "torch>=1.12.0",
         "torchvision>=0.13.0",
         "einops>=0.6.0",
+        "timm>=0.9.0",
         "huggingface-hub>=0.16.0",
         "numpy>=1.21.0",
+        "omegaconf>=2.1.0",
+        "openslide-python>=1.3.1",
+        "tifffile>=2024.0.0",
     ],
 )
-
