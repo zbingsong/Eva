@@ -68,7 +68,7 @@ See `config.yaml` for an example configuration.
 
 ## WSI Inference
 
-Run one-slide level-0 virtual staining and export both the raw `float32` memmap and the quantized OME-TIFF:
+Run one-slide level-0 virtual staining and export both the raw `float32` memmap and the OME-TIFF:
 
 ```bash
 python scripts/run_wsi_inference.py \
@@ -85,8 +85,13 @@ By default the CLI loads `config.yaml`, `examples/biomarkers.npy`, and `Eva_ft.c
 OME-TIFF quantization modes:
 - `global` (default): quantize each biomarker using the min/max over the whole level image
 - `tile`: quantize each full inference tile independently before stitching into the OME-TIFF
+- `none`: skip quantization and write raw `float32` biomarker values directly to the OME-TIFF
 
-In `tile` mode, `--quant-min` and `--quant-max` are ignored with a warning.
+In `tile` and `none` modes, `--quant-min` and `--quant-max` are ignored with a warning.
+
+`--ome-dtype` defaults to:
+- `uint16` for `global` and `tile`
+- `float32` for `none`
 
 Smoke validation stays opt-in so it remains cheap by default. Point `EVA_WSI_SMOKE_SVS` at a small `.svs` sample, then run:
 
