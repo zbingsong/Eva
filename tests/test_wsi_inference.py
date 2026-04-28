@@ -111,7 +111,7 @@ def test_run_level_inference_skips_blank_tiles_and_writes_outputs(tmp_path: Path
     ]
     assert len(model_batches) == 1
     assert arr.shape == (224, 448, 2)
-    assert np.all(arr[:, :224] == 0.0)
+    assert np.all(np.isnan(arr[:, :224]))
     assert np.all(arr[:, 224:] == 3.0)
 
     assert result.level == 0
@@ -270,7 +270,7 @@ def test_run_level_inference_batches_tiles_and_coerces_nchw_predictions(tmp_path
 
     assert batch_sizes == [2, 1]
     assert arr.shape == (224, 896, 2)
-    assert np.all(arr[:, 0:224] == 0.0)
+    assert np.all(np.isnan(arr[:, 0:224]))
     assert np.all(arr[:, 224:448, 0] == 1.0)
     assert np.all(arr[:, 224:448, 1] == 10.0)
     assert np.all(arr[:, 448:672, 0] == 2.0)

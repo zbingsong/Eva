@@ -30,7 +30,10 @@ class RawPredictionWriter:
             dtype=self._dtype,
             shape=shape,
         )
-        self._array[...] = 0
+        if np.issubdtype(self._dtype, np.floating):
+            self._array[...] = np.nan
+        else:
+            self._array[...] = 0
 
     def write_tile(self, x: int, y: int, tile: np.ndarray) -> None:
         if not isinstance(x, int) or isinstance(x, bool) or x < 0:

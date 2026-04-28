@@ -18,8 +18,8 @@ def test_raw_writer_persists_tile_into_memmap(tmp_path) -> None:
     assert arr.shape == (448, 448, 2)
     assert arr.dtype == np.float32
     assert np.all(arr[0:224, 224:448] == 1.0)
-    assert np.all(arr[0:224, 0:224] == 0.0)
-    assert np.all(arr[224:, :] == 0.0)
+    assert np.all(np.isnan(arr[0:224, 0:224]))
+    assert np.all(np.isnan(arr[224:, :]))
 
 
 def test_raw_writer_rejects_tile_shape_and_bounds_mismatches(tmp_path) -> None:

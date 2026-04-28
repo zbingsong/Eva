@@ -191,12 +191,16 @@ def _quantize_channel_chunk(
 ) -> None:
     for channel_idx in range(start_idx, stop_idx):
         channel_view = raw_predictions[:, :, channel_idx]
+        if np.any(np.isinf(channel_view)):
+            raise ValueError("raw predictions must not contain infinite values")
         if quant_min is None:
-            channel_min = float(np.min(channel_view))
-            channel_max = float(np.max(channel_view))
+            channel_range = _finite_min_max(channel_view)
 
-            if not np.isfinite(channel_min) or not np.isfinite(channel_max):
-                raise ValueError("raw predictions must contain only finite values")
+            if channel_range is None:
+                quantized[channel_idx, :, :] = np.uint16(0)
+                continue
+
+            channel_min, channel_max = channel_range
 
             if channel_max == channel_min:
                 quantized[channel_idx, :, :] = np.uint16(0)
@@ -206,7 +210,7 @@ def _quantize_channel_chunk(
             channel_max = quant_max
 
         quantized[channel_idx, :, :] = quantize_uint16(
-            channel_view,
+            np.nan_to_num(channel_view, nan=channel_min),
             quant_min=channel_min,
             quant_max=channel_max,
         )
@@ -226,18 +230,20 @@ def _quantize_channel_chunk_by_tile(
 
         for x, y, width, height in iter_level_tiles(level_size, tile_size=tile_size, stride=tile_size):
             tile_view = channel_view[y : y + height, x : x + width]
-            tile_min = float(np.min(tile_view))
-            tile_max = float(np.max(tile_view))
+            tile_range = _finite_min_max(tile_view)
 
-            if not np.isfinite(tile_min) or not np.isfinite(tile_max):
-                raise ValueError("raw predictions must contain only finite values")
+            if tile_range is None:
+                quantized[channel_idx, y : y + height, x : x + width] = np.uint16(0)
+                continue
+
+            tile_min, tile_max = tile_range
 
             if tile_max == tile_min:
                 quantized[channel_idx, y : y + height, x : x + width] = np.uint16(0)
                 continue
 
             quantized[channel_idx, y : y + height, x : x + width] = quantize_uint16(
-                tile_view,
+                np.nan_to_num(tile_view, nan=tile_min),
                 quant_min=tile_min,
                 quant_max=tile_max,
             )
@@ -251,8 +257,24 @@ def _copy_channel_chunk_float32(
 ) -> None:
     for channel_idx in range(start_idx, stop_idx):
         channel_view = raw_predictions[:, :, channel_idx]
+        channel_range = _finite_min_max(channel_view)
 
-        if not np.all(np.isfinite(channel_view)):
-            raise ValueError("raw predictions must contain only finite values")
+        if channel_range is None:
+            staged_predictions[channel_idx, :, :] = np.float32(0.0)
+            continue
 
-        staged_predictions[channel_idx, :, :] = channel_view.astype(np.float32, copy=False)
+        channel_min, _ = channel_range
+        staged_predictions[channel_idx, :, :] = np.nan_to_num(channel_view, nan=channel_min).astype(
+            np.float32,
+            copy=False,
+        )
+
+
+def _finite_min_max(values: np.ndarray) -> tuple[float, float] | None:
+    if np.any(np.isinf(values)):
+        raise ValueError("raw predictions must not contain infinite values")
+
+    if np.all(np.isnan(values)):
+        return None
+
+    return float(np.nanmin(values)), float(np.nanmax(values))

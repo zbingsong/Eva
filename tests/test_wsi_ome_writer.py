@@ -137,7 +137,7 @@ def test_run_level_inference_writes_raw_and_ome_outputs(tmp_path: Path) -> None:
     raw = np.load(result.raw_npy_path, mmap_mode="r")
 
     assert raw.shape == (224, 448, 2)
-    assert np.all(raw[:, :224] == 0.0)
+    assert np.all(np.isnan(raw[:, :224]))
     assert np.isclose(raw[0, 224, 0], 0.0)
     assert np.isclose(raw[-1, -1, 0], 1.0)
     assert np.isclose(raw[0, 224, 1], 0.0)
@@ -341,3 +341,103 @@ def test_write_level_ome_tiff_none_mode_preserves_float32_values(tmp_path: Path)
     np.testing.assert_allclose(data, raw[:, :, 0])
     assert pixels is not None
     assert pixels.attrib["Type"] == "float"
+
+
+def test_write_level_ome_tiff_global_fills_nan_background_with_channel_min(tmp_path: Path) -> None:
+    raw_path = tmp_path / "nan-global-pred.npy"
+    raw = np.lib.format.open_memmap(raw_path, mode="w+", dtype=np.float32, shape=(2, 3, 1))
+    raw[:, :, 0] = np.array(
+        [
+            [np.nan, -2.0, 4.0],
+            [np.nan, 1.0, 10.0],
+        ],
+        dtype=np.float32,
+    )
+    raw.flush()
+
+    ome_path = write_level_ome_tiff(
+        raw_npy_path=raw_path,
+        ome_path=tmp_path / "nan-global-pred.ome.tiff",
+        channel_names=["A"],
+        level=0,
+        channel_chunk_size=1,
+        quant_mode="global",
+        tile_size=2,
+        ome_dtype="uint16",
+    )
+
+    with tifffile.TiffFile(ome_path) as tif:
+        data = np.squeeze(tif.series[0].asarray())
+
+    assert data[0, 0] == 0
+    assert data[1, 0] == 0
+    assert data[0, 1] == 0
+    assert data[1, 2] == np.iinfo(np.uint16).max
+
+
+def test_write_level_ome_tiff_tile_sets_nan_background_tile_to_black(tmp_path: Path) -> None:
+    raw_path = tmp_path / "nan-tile-pred.npy"
+    raw = np.lib.format.open_memmap(raw_path, mode="w+", dtype=np.float32, shape=(2, 4, 1))
+    raw[:, 0:2, 0] = np.nan
+    raw[:, 2:4, 0] = np.array([[10.0, 20.0], [10.0, 20.0]], dtype=np.float32)
+    raw.flush()
+
+    ome_path = write_level_ome_tiff(
+        raw_npy_path=raw_path,
+        ome_path=tmp_path / "nan-tile-pred.ome.tiff",
+        channel_names=["A"],
+        level=0,
+        channel_chunk_size=1,
+        quant_mode="tile",
+        tile_size=2,
+        ome_dtype="uint16",
+    )
+
+    with tifffile.TiffFile(ome_path) as tif:
+        data = np.squeeze(tif.series[0].asarray())
+
+    expected = np.array(
+        [
+            [0, 0, 0, np.iinfo(np.uint16).max],
+            [0, 0, 0, np.iinfo(np.uint16).max],
+        ],
+        dtype=np.uint16,
+    )
+    assert np.array_equal(data, expected)
+
+
+def test_write_level_ome_tiff_none_fills_nan_background_with_channel_min(tmp_path: Path) -> None:
+    raw_path = tmp_path / "nan-float-pred.npy"
+    raw = np.lib.format.open_memmap(raw_path, mode="w+", dtype=np.float32, shape=(2, 3, 1))
+    raw[:, :, 0] = np.array(
+        [
+            [np.nan, -1.5, 1.5],
+            [2.25, np.nan, 3.5],
+        ],
+        dtype=np.float32,
+    )
+    raw.flush()
+
+    ome_path = write_level_ome_tiff(
+        raw_npy_path=raw_path,
+        ome_path=tmp_path / "nan-float-pred.ome.tiff",
+        channel_names=["A"],
+        level=0,
+        channel_chunk_size=1,
+        quant_mode="none",
+        tile_size=2,
+        ome_dtype="float32",
+    )
+
+    with tifffile.TiffFile(ome_path) as tif:
+        data = np.squeeze(tif.series[0].asarray())
+
+    expected = np.array(
+        [
+            [-1.5, -1.5, 1.5],
+            [2.25, -1.5, 3.5],
+        ],
+        dtype=np.float32,
+    )
+    assert data.dtype == np.float32
+    np.testing.assert_allclose(data, expected)

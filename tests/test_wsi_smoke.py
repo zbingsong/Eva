@@ -132,7 +132,7 @@ def test_smoke_region_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         raw = np.load(raw_path, mmap_mode="r")
         assert raw.shape == (level_height, level_width, len(biomarkers))
         assert raw.shape[2] == len(biomarkers)
-        predicted_positions = np.argwhere(np.any(raw != 0.0, axis=-1))
+        predicted_positions = np.argwhere(np.any(np.isfinite(raw), axis=-1))
         assert predicted_positions.size > 0
 
         y, x = predicted_positions[0]
