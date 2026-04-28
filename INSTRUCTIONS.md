@@ -28,3 +28,5 @@ python scripts/run_wsi_inference.py \
 
 # Important Things
 - The WSI inference pipeline first split the input WSI level into non-overlapping tiles, and then identify background tiles using a heuristic: tiles where 99.9% of pixels have RGB values greater than 200 in all 3 channels are considered background (this means this tile is almost purely white).
+- The prediction array is first initialized with `NaN`. Background tiles are skipped during inference. After model inference, background tiles are filled with global minimum for `global` and `none` mode, or directly made black for `tile` mode.
+
